@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'admin_login_screen.dart';
 
-
 enum MapType { normal, satellite, hybrid }
 
 class UserMapScreen extends StatefulWidget {
@@ -22,32 +21,25 @@ class _UserMapScreenState extends State<UserMapScreen> {
   final MapController mapController = MapController();
   final FlutterTts tts = FlutterTts();
 
-
   MapType currentMapType = MapType.normal;
 
   // LOCATION
   LatLng? myLocation;
   LatLng? destination;
 
-  // ADMIN
+  // ADMIN & HUMPS
   bool isAdminLoggedIn = false;
   LatLng? selectedHump;
   List<LatLng> humps = [];
-  
   final Set<String> alertedHumps = {};
-
-
 
   // ROUTE
   List<LatLng> routePoints = [];
-  List<String> turnInstructions = [];
   double? routeDistanceKm;
 
-  // HUMP ALERT
-  final double humpAlertDistance = 150;
+  // HUMP ALERT STATE
   LatLng? activeHump;
   double? humpDistance;
-  bool voiceSpoken = false;
 
   @override
   void initState() {
@@ -60,7 +52,7 @@ class _UserMapScreenState extends State<UserMapScreen> {
   // ================= VOICE =================
   Future<void> initTts() async {
     await tts.setLanguage('en-IN');
-    await tts.setSpeechRate(0.45);
+    await tts.setSpeechRate(0.5);
     await tts.setVolume(1.0);
   }
 
@@ -71,32 +63,42 @@ class _UserMapScreenState extends State<UserMapScreen> {
 
   // ================= LOCATION =================
   void startLiveLocation() async {
-    LocationPermission permission = await Geolocator.requestPermission();
-    if (permission == LocationPermission.deniedForever) return;
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) return;
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) return;
+    }
 
     Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 3,
+        distanceFilter: 5,
       ),
     ).listen((pos) {
       final latLng = LatLng(pos.latitude, pos.longitude);
-      setState(() => myLocation = latLng);
-      mapController.move(latLng, 16);
+      setState(() {
+        myLocation = latLng;
+      });
+      // Move map smoothly with user
+      mapController.move(latLng, mapController.camera.zoom);
       checkNearbyHumps(pos);
     });
   }
 
-  // ================= HUMPS =================
+  // ================= HUMPS STORAGE =================
   Future<void> loadHumps() async {
     final prefs = await SharedPreferences.getInstance();
     final list = prefs.getStringList('humps');
     if (list != null) {
-      humps = list.map((s) {
-        final p = s.split(',');
-        return LatLng(double.parse(p[0]), double.parse(p[1]));
-      }).toList();
-      setState(() {});
+      setState(() {
+        humps = list.map((s) {
+          final p = s.split(',');
+          return LatLng(double.parse(p[0]), double.parse(p[1]));
+        }).toList();
+      });
     }
   }
 
@@ -108,135 +110,114 @@ class _UserMapScreenState extends State<UserMapScreen> {
     );
   }
 
-  // ================= ROUTE =================
+  // ================= ROUTING =================
   Future<void> fetchRoute() async {
     if (myLocation == null || destination == null) return;
 
-    final url =
-        'https://router.project-osrm.org/route/v1/driving/'
+    final url = 'https://router.project-osrm.org/route/v1/driving/'
         '${myLocation!.longitude},${myLocation!.latitude};'
         '${destination!.longitude},${destination!.latitude}'
-        '?overview=full&geometries=geojson&steps=true';
+        '?overview=full&geometries=geojson';
 
-    final res = await http.get(Uri.parse(url));
-    final data = json.decode(res.body);
-    final route = data['routes'][0];
+    try {
+      final res = await http.get(Uri.parse(url));
+      final data = json.decode(res.body);
+      if (data['routes'] == null || data['routes'].isEmpty) return;
+
+      final route = data['routes'][0];
+      setState(() {
+        routePoints = (route['geometry']['coordinates'] as List)
+            .map((c) => LatLng(c[1], c[0]))
+            .toList();
+        routeDistanceKm = route['distance'] / 1000;
+      });
+    } catch (e) {
+      debugPrint("Route error: $e");
+    }
+  }
+
+  // ================= SMART HUMP ALERT =================
+  void checkNearbyHumps(Position pos) {
+    double speedKmh = pos.speed * 3.6;
+    double dynamicAlertDistance = speedKmh > 50 ? 200 : 150;
+
+    LatLng? nearestHump;
+    double minDistance = double.infinity;
+
+    for (final hump in humps) {
+      final distance = Geolocator.distanceBetween(
+        pos.latitude, pos.longitude,
+        hump.latitude, hump.longitude,
+      );
+
+      final key = "${hump.latitude.toStringAsFixed(6)},${hump.longitude.toStringAsFixed(6)}";
+
+      // Trigger Voice and Snack if entering alert zone
+      if (distance <= dynamicAlertDistance && !alertedHumps.contains(key)) {
+        alertedHumps.add(key);
+        speak("Caution, speed breaker ahead");
+        showHumpSnackBar(distance);
+      }
+
+      // Track the closest hump for the UI countdown
+      if (distance <= dynamicAlertDistance && distance < minDistance) {
+        minDistance = distance;
+        nearestHump = hump;
+      }
+
+      // Reset alert for this hump if we have moved far away
+      if (distance > dynamicAlertDistance * 2) {
+        alertedHumps.remove(key);
+      }
+    }
 
     setState(() {
-      routePoints = (route['geometry']['coordinates'] as List)
-          .map((c) => LatLng(c[1], c[0]))
-          .toList();
-
-      routeDistanceKm = route['distance'] / 1000;
-
-      turnInstructions =
-          (route['legs'][0]['steps'] as List).map<String>((s) {
-        final m = s['maneuver'];
-        final t = m['type'];
-        final mod = m['modifier'] ?? '';
-        if (t == 'turn') return 'Turn $mod';
-        if (t == 'roundabout') return 'Enter roundabout';
-        if (t == 'arrive') return 'You have arrived';
-        return 'Continue straight';
-      }).toList();
-
-      activeHump = null;
-      humpDistance = null;
-      voiceSpoken = false;
+      activeHump = nearestHump;
+      humpDistance = nearestHump != null ? minDistance : null;
     });
   }
 
-  // ================= ROUTE–HUMP MATCH =================
-  bool isHumpOnRoute(LatLng hump) {
-    for (final p in routePoints) {
-      final d = Geolocator.distanceBetween(
-        p.latitude,
-        p.longitude,
-        hump.latitude,
-        hump.longitude,
-      );
-      if (d <= 40) return true;
-    }
-    return false;
-  }
-
-  void checkNearbyHumps(Position pos) {
-  final speedKmh = pos.speed * 3.6; // convert m/s to km/h
-
-  double dynamicAlertDistance = 150;
-
-  if (speedKmh > 50) {
-    dynamicAlertDistance = 200;
-  } else if (speedKmh > 30) {
-    dynamicAlertDistance = 170;
-  }
-
-  for (final hump in humps) {
-    final distance = Geolocator.distanceBetween(
-      pos.latitude,
-      pos.longitude,
-      hump.latitude,
-      hump.longitude,
-    );
-
-    final key =
-        '${hump.latitude.toStringAsFixed(6)},${hump.longitude.toStringAsFixed(6)}';
-
-    if (distance <= dynamicAlertDistance &&
-        !alertedHumps.contains(key)) {
-      alertedHumps.add(key);
-      showHumpAlert(distance);
-    }
-
-    if (distance > dynamicAlertDistance * 2) {
-      alertedHumps.remove(key);
-    }
-  }
-}
-
-// 🚨 SHOW HUMP ALERT
-void showHumpAlert(double distance) {
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      backgroundColor: Colors.orange,
-      content: Text(
-        '⚠️ Hump ahead in ${distance.toStringAsFixed(0)} meters',
-        style: const TextStyle(fontWeight: FontWeight.bold),
+  void showHumpSnackBar(double distance) {
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: Colors.deepOrange,
+        behavior: SnackBarBehavior.floating,
+        content: Row(
+          children: [
+            const Icon(Icons.warning, color: Colors.white),
+            const SizedBox(width: 10),
+            Text('Hump ahead: ${distance.toStringAsFixed(0)}m'),
+          ],
+        ),
       ),
-      duration: const Duration(seconds: 3),
-    ),
-  );
-}
+    );
+  }
 
-
-  // ================= UI =================
+  // ================= UI BUILD =================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(isAdminLoggedIn ? 'MYSITY MAP (ADMIN)' : 'MYSITY MAP'),
-        backgroundColor: isAdminLoggedIn ? Colors.green : null,
+        title: Text(isAdminLoggedIn ? 'MYSITY MAP (Admin Mode)' : 'MYsity Map'),
+        centerTitle: true,
+        backgroundColor: isAdminLoggedIn ? Colors.green[700] : Colors.amber[700],
+        foregroundColor: Colors.white,
         actions: [
           PopupMenuButton<MapType>(
             icon: const Icon(Icons.layers),
             onSelected: (v) => setState(() => currentMapType = v),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: MapType.normal, child: Text('Normal')),
-              PopupMenuItem(value: MapType.satellite, child: Text('Satellite')),
-              PopupMenuItem(value: MapType.hybrid, child: Text('Hybrid')),
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: MapType.normal, child: Text('Normal Map')),
+              const PopupMenuItem(value: MapType.satellite, child: Text('Satellite')),
+              const PopupMenuItem(value: MapType.hybrid, child: Text('Hybrid')),
             ],
           ),
           IconButton(
-            icon: Icon(isAdminLoggedIn
-                ? Icons.logout
-                : Icons.admin_panel_settings),
+            icon: Icon(isAdminLoggedIn ? Icons.logout : Icons.admin_panel_settings),
             onPressed: () async {
               if (!isAdminLoggedIn) {
-                final ok = await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => const AdminLoginScreen()),
-                );
+                final ok = await Navigator.push(context, MaterialPageRoute(builder: (_) => const AdminLoginScreen()));
                 if (ok == true) setState(() => isAdminLoggedIn = true);
               } else {
                 setState(() => isAdminLoggedIn = false);
@@ -250,150 +231,147 @@ void showHumpAlert(double distance) {
           FlutterMap(
             mapController: mapController,
             options: MapOptions(
-              initialCenter: const LatLng(12.2958, 76.6394),
-              initialZoom: 14,
+              initialCenter: const LatLng(12.2958, 76.6394), // Mysore
+              initialZoom: 15,
               onTap: (_, p) {
                 if (isAdminLoggedIn) {
                   setState(() => selectedHump = p);
                 } else {
-                  setState(() => destination = p);
+                  setState(() {
+                    destination = p;
+                    routePoints = []; // Clear old route
+                  });
                   fetchRoute();
                 }
               },
             ),
             children: [
+              // TILE LAYERS
               if (currentMapType == MapType.normal)
                 TileLayer(
-                  urlTemplate:
-                      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+                  urlTemplate: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
                   subdomains: const ['a', 'b', 'c', 'd'],
-                ),
-              if (currentMapType != MapType.normal)
+                )
+              else
                 TileLayer(
-                  urlTemplate:
-                      'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                  urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
                 ),
               if (currentMapType == MapType.hybrid)
                 TileLayer(
-                  urlTemplate:
-                      'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+                  urlTemplate: 'https://stamen-tiles.a.ssl.fastly.net/terrain-labels/{z}/{x}/{y}.jpg',
                 ),
 
+              // ROUTE LAYER
               if (routePoints.isNotEmpty)
                 PolylineLayer(
                   polylines: [
-                    Polyline(
-                        points: routePoints,
-                        strokeWidth: 5,
-                        color: Colors.blue),
+                    Polyline(points: routePoints, strokeWidth: 6, color: Colors.blueAccent),
                   ],
                 ),
 
+              // MARKERS LAYER
               MarkerLayer(
                 markers: [
                   if (myLocation != null)
                     Marker(
                       point: myLocation!,
-                      child:
-                          const Icon(Icons.my_location, color: Colors.blue),
+                      width: 40, height: 40,
+                      child: const Icon(Icons.navigation, color: Colors.blue, size: 30),
                     ),
                   if (destination != null)
                     Marker(
                       point: destination!,
-                      child: const Icon(Icons.flag, color: Colors.red),
+                      child: const Icon(Icons.location_on, color: Colors.red, size: 40),
                     ),
-
-                  // 🟠 HUMP ICON ON ROUTE
-                  if (activeHump != null)
-                    Marker(
-                      point: activeHump!,
-                      child: const Icon(Icons.warning,
-                          color: Colors.orange, size: 30),
+                  
+                  // SHOW ALL HUMPS
+                  ...humps.map((h) => Marker(
+                    point: h,
+                    child: GestureDetector(
+                      onLongPress: () {
+                        if (isAdminLoggedIn) {
+                          setState(() => humps.remove(h));
+                          saveHumps();
+                        }
+                      },
+                      child: const Icon(Icons.warning_amber_rounded, color: Color.fromARGB(255, 25, 0, 255), size: 25),
                     ),
-
-                  if (isAdminLoggedIn)
-                    ...humps.map(
-                      (h) => Marker(
-                        point: h,
-                        child: GestureDetector(
-                          onLongPress: () {
-                            setState(() => humps.remove(h));
-                            saveHumps();
-                          },
-                          child: const Icon(Icons.warning,
-                              color: Colors.orange),
-                        ),
-                      ),
-                    ),
+                  )),
 
                   if (selectedHump != null)
                     Marker(
                       point: selectedHump!,
-                      child: const Icon(Icons.add_location_alt,
-                          color: Colors.blue),
+                      child: const Icon(Icons.add_location_alt, color: Colors.green, size: 35),
                     ),
                 ],
               ),
             ],
           ),
 
-          // DISTANCE
+          // TOP INFO CARD (Distance)
           if (routeDistanceKm != null)
             Positioned(
-              top: 16,
-              left: 16,
-              right: 16,
+              top: 10, left: 15, right: 15,
               child: Card(
+                elevation: 4,
                 child: Padding(
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
                   child: Text(
-                    'Distance: ${routeDistanceKm!.toStringAsFixed(2)} km',
+                    '🏁 Distance to destination: ${routeDistanceKm!.toStringAsFixed(2)} km',
                     textAlign: TextAlign.center,
-                    style:
-                        const TextStyle(fontWeight: FontWeight.bold),
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                 ),
               ),
             ),
 
-          // ⚠️ HUMP WARNING + COUNTDOWN
-          if (activeHump != null && humpDistance != null)
+          // HUMP COUNTDOWN OVERLAY
+          if (humpDistance != null)
             Positioned(
-              top: 72,
-              left: 16,
-              right: 16,
-              child: Card(
-                color: Colors.orange,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    '⚠️ HUMP AHEAD in ${humpDistance!.toStringAsFixed(0)} m',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold),
-                  ),
+              bottom: 120, left: 50, right: 50,
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '⚠️ Speed Breaker in ${humpDistance!.toStringAsFixed(0)}m',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                 ),
               ),
             ),
 
-          // SAVE HUMP
+          // ADMIN SAVE BUTTON
           if (isAdminLoggedIn && selectedHump != null)
             Positioned(
-              left: 16,
-              bottom: 90,
+              bottom: 20, left: 20,
               child: FloatingActionButton.extended(
-                backgroundColor: Colors.orange,
-                icon: const Icon(Icons.warning),
-                label: const Text('Save Hump'),
+                backgroundColor: Colors.green,
                 onPressed: () {
-                  humps.add(selectedHump!);
-                  selectedHump = null;
+                  setState(() {
+                    humps.add(selectedHump!);
+                    selectedHump = null;
+                  });
                   saveHumps();
-                  setState(() {});
                 },
+                label: const Text("Confirm Hump"),
+                icon: const Icon(Icons.check),
               ),
             ),
+
+          // RE-CENTER BUTTON
+          Positioned(
+            bottom: 20, right: 20,
+            child: FloatingActionButton(
+              backgroundColor: Colors.white,
+              onPressed: () {
+                if (myLocation != null) mapController.move(myLocation!, 17);
+              },
+              child: const Icon(Icons.my_location, color: Colors.blue),
+            ),
+          ),
         ],
       ),
     );
