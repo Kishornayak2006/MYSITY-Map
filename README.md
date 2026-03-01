@@ -1,16 +1,1 @@
-# mysity_map
-
-A new Flutter project.
-
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+🚀 MYSITY MAP – Smart Road Safety Navigation for MysoreMYSITY MAP is a location-based navigation application specifically engineered to enhance road safety in Mysore. By combining real-time GPS tracking with a crowdsourced/admin-managed database of speed breakers (humps), the app ensures drivers are never caught off guard.📸 App PreviewSplash & LoginNavigation ModeAdmin Portal✨ Key Features🔐 Admin PortalSecure Authentication: Dedicated login for authorized personnel (e.g., city planners or app moderators).Live Data Management: Admins can tap directly on the map to add, edit, or remove speed breaker coordinates in real-time.🗺️ User ExperienceSmart Navigation: Seamless routing from your current location to any destination.Live Distance Tracking: High-precision GPS tracking to show exactly how far you are from your destination.🔊 Voice Alerts: Automatic Text-to-Speech (TTS) warnings: “Hump ahead” when the vehicle is within 150 meters of a recorded speed breaker.⚠️ Proximity Notifications: Visual push notifications for an extra layer of safety.Multi-Layer Maps: Switch between Normal, Satellite, and Hybrid views to suit your driving environment.🛠️ Tech Stack & ToolsFramework: Flutter (High-performance Cross-platform UI)Map Engine: OpenStreetMap (OSM) via flutter_mapBackend: Firebase Cloud Firestore (Real-time data syncing)Navigation: Polyline integration for accurate route plotting.Voice Engine: flutter_tts for real-time audio safety cues.Location: geolocator for background and foreground GPS services.🚀 Future RoadmapI am actively working on taking this project from a demo to a production-ready city tool:[ ] Real-time Traffic: Integration with live traffic APIs.[ ] Community Reporting: Allow verified users to report new humps or potholes.[ ] Offline Maps: Ability to navigate even without a data connection.[ ] Analytics Dashboard: For city officials to see high-density hump areas.
