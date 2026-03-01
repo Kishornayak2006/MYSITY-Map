@@ -8,7 +8,7 @@
 
 | Splash & Login | Navigation Mode | Admin Portal |
 | :---: | :---: | :---: |
-| <img src="screenshots/logo.png" width="200"> | <img src="screenshots/map.png" width="200"> | <img src="screenshots/admin.png" width="200"> |
+| <img src="screenshots/icon.png" width="200"> | <img src="screenshots/map.png" width="200"> | <img src="screenshots/admin.png" width="200"> |
 
 > **Note:** To see images here, create a folder named `screenshots` in your repo and upload your app photos as `splash.png`, `map.png`, and `admin.png`.
 
